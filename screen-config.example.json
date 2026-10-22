@@ -1,0 +1,4 @@
+{
+  "network": "192.168.1.100:5555",
+  "usb_serial": "YOUR_LX04_USB_SERIAL"
+}

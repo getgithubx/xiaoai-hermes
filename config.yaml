@@ -1,0 +1,16 @@
+hardware: LX04
+use_command: true
+tts: mi
+bot: chatgptapi
+api_base: http://127.0.0.1:8642/v1
+stream: false
+mute_xiaoai: true
+verbose: 0
+keyword: []
+change_prompt_keyword: []
+start_conversation: ""
+end_conversation: ""
+prompt: "你正在通过小爱音箱与用户对话。请用简洁自然的中文回答，通常不超过150字，不读Markdown符号；较长任务先简要说明结果。"
+gpt_options:
+  model: hermes-agent
+  timeout: 180

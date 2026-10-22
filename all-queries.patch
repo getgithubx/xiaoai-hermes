@@ -1,0 +1,31 @@
+diff --git a/xiaogpt/xiaogpt.py b/xiaogpt/xiaogpt.py
+index 5ec5567..ffb13bc 100644
+--- a/xiaogpt/xiaogpt.py
++++ b/xiaogpt/xiaogpt.py
+@@ -217,6 +217,9 @@ class MiGPT:
+         if not record:
+             return False
+         query = record.get("query", "")
++        # Empty keyword list means every utterance, excluding a bare wake word.
++        if not self.config.keyword:
++            return bool(query.strip()) and query.strip() != WAKEUP_KEYWORD
+         return (
+             self.in_conversation
+             and not query.startswith(WAKEUP_KEYWORD)
+@@ -386,10 +389,12 @@ class MiGPT:
+         await self.init_all_data()
+         task = asyncio.create_task(self.poll_latest_ask())
+         assert task is not None  # to keep the reference to task, do not remove this
+-        print(
+-            f"Running xiaogpt now, 用 [green]{'/'.join(self.config.keyword)}[/] 开头来提问"
+-        )
+-        print(f"或用 [green]{self.config.start_conversation}[/] 开始持续对话")
++        if self.config.keyword:
++            print(f"用 [green]{'/'.join(self.config.keyword)}[/] 开头来提问")
++        else:
++            print(f"所有识别到的问题都会交给 {self.chatbot.name}，无需前缀。")
++        if self.config.start_conversation:
++            print(f"或用 [green]{self.config.start_conversation}[/] 开始持续对话")
+         while True:
+             self.polling_event.set()
+             new_record = await self.last_record.get()
