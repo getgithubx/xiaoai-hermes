@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from contextlib import suppress
 import fcntl
 import getpass
 import json
@@ -28,9 +29,28 @@ from screen_display import ScreenDisplay
 from hermes_session import WeeklySession
 
 
+class VoiceChatGPTBot(ChatGPTBot):  # 仅调整音箱请求，不影响 Hermes 的其他入口。
+    def _make_openai_client(self, sess):  # 沿用上游模型地址、认证和 HTTP 会话。
+        client = super()._make_openai_client(sess)  # 不复制认证配置，避免密钥进入日志。
+        client.max_retries = 0  # 超时并不代表服务端停止，重发会重复执行用户任务。
+        return client  # 保留配置中的单次请求超时，不进行隐式补发。
+
+
+class LX04MiNAService(MiNAService):  # 只适配这台 LX04 的播报，其他小米云接口继续继承原实现。
+    async def text_to_speech(self, device_id, text):  # 同时供等待提示和 Hermes 正式回答调用，避免两条播报路径不一致。
+        return await self.ubus_request(  # 复用现有 micoapi 登录；不经过当前报错的 xiaomiio/MIoT 接口。
+            device_id, 'ai_tts_request', 'mibrain',  # 此方法已由原机 2.42.118 代码和实际音频验证；其他固件需重新核对。
+            {'tts_text': text, 'show_ui': False})  # 保留原始文本、交给 JSON 编码；不弹出官方字幕，继续使用 Hermes 屏显。
+
+
 class ScreenMiGPT(MiGPT):
+    async def login_miboy(self, refresh_token=False):  # 初次登录及令牌刷新都走这里，确保刷新后不会丢失 LX04 适配。
+        await super().login_miboy(refresh_token)  # 先沿用上游账号和令牌处理，避免复制或改变现有认证逻辑。
+        self.mina_service = LX04MiNAService(self.mina_service.account)  # 在初始化设备和 TTS 对象前替换服务，保留同一账号会话。
+
     def __init__(self, config, screen):
         super().__init__(config)
+        self.chatbot = VoiceChatGPTBot.from_config(config)  # 当前桥接固定使用 ChatGPT 兼容 API。
         self.screen = screen
         self.hermes_session = WeeklySession(
             STATE / 'hermes-session.json', f'agent:main:xiaoai:dm:{config.mi_did}')
@@ -39,6 +59,18 @@ class ScreenMiGPT(MiGPT):
         # Preserve paragraphs and punctuation on screen before Xiaomi TTS cleanup.
         self.screen_answer += message
         return super()._normalize(message)
+
+    async def _report_waiting(self, query):  # 等待反馈与模型请求并行，不再次提交问题。
+        elapsed = 0  # 只用于显示等待时间，不推测模型实际进度。
+        while True:  # 最终回答或异常到达后，由 ask_gpt 取消此任务。
+            await asyncio.sleep(20)  # 简单问题不增加提示；长任务每二十秒刷新屏幕。
+            elapsed += 20  # 使用累计等待值，不显示系统时区或个人数据。
+            self.screen.publish(query, f'Hermes 仍在处理，已等待约 {elapsed} 秒。', '等待回答')  # 仍是等待状态，不冒充答案。
+            if elapsed == 20:  # 仅播报一次，避免不断打扰用户。
+                try:
+                    await asyncio.wait_for(self.do_tts('赫尔墨斯还在处理，请稍候。'), timeout=8)  # 播报故障也不能卡住等待任务。
+                except Exception:
+                    logging.getLogger(__name__).warning('等待提示暂未播出')  # 不输出可能包含账号信息的异常正文。
 
     async def ask_gpt(self, query):
         # Refresh for every turn, even if the daemon runs across the seven-day boundary.
@@ -57,8 +89,16 @@ class ScreenMiGPT(MiGPT):
             visible_query = visible_query[:-len(suffix)]
         self.screen.publish(visible_query, '正在思考，请稍候…', '思考中')
         self.screen_answer = ''
+        waiting = asyncio.create_task(self._report_waiting(visible_query))  # 独立提示任务不改变七天会话。
         try:
             async for chunk in super().ask_gpt(query):
+                waiting.cancel()  # 在显示答案前停止刷新，避免等待文字覆盖答案。
+                with suppress(asyncio.CancelledError):
+                    await waiting  # 确认提示任务已退出，避免遗留后台任务。
+                if not chunk:  # 上游将请求异常转换为空字符串，必须给用户可听见的反馈。
+                    self.screen.publish(visible_query, '暂未收到 Hermes 回答；任务可能仍在处理，请稍后再试。', '未收到回答')
+                    yield '暂未收到赫尔墨斯的回答，任务可能仍在处理，请稍后再试。'  # 明确等待失败，不声称已取消服务端任务。
+                    continue
                 answer = self.screen_answer
                 self.screen.publish(visible_query, answer or '暂未收到回答，请稍后重试。',
                                     'Hermes 回答' if answer else '未收到回答')
@@ -66,6 +106,10 @@ class ScreenMiGPT(MiGPT):
         except Exception:
             self.screen.publish(visible_query, '这次请求没有完成，请稍后再试。', '连接异常')
             raise
+        finally:
+            waiting.cancel()  # 请求异常或调用者取消时，也必须回收等待提示。
+            with suppress(asyncio.CancelledError):
+                await waiting  # 不留下会覆盖下一轮屏幕的任务。
 
 
 def load_config() -> Config:

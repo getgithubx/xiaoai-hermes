@@ -1,5 +1,7 @@
 hardware: LX04
-use_command: true
+# 使用 LX04 的 MiNA ai_tts_request 播报；原 MIoT 命令接口目前报错，会使桥接在回答前退出。
+# 依赖 bridge.py 中的 LX04MiNAService；仅改此开关而使用上游旧 text_to_speech 方法会请求成功却不出声。
+use_command: false
 tts: mi
 bot: chatgptapi
 api_base: http://127.0.0.1:8642/v1
