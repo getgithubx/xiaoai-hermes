@@ -19,3 +19,6 @@ tools/mtk-venv/
 *.key
 .env*
 dist/
+
+# Frida 二进制从上游获取，不进入源码仓库。
+tools/frida-server-*
